@@ -1,0 +1,380 @@
+{
+  "name": "W2 – Steps 2–4: Lewis network",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## W2 – Steps 2–4: Lewis network → Neo4j\n**Source:** Lewis, *Alternative Influence* (Data & Society, 2018). Fig. 1 edges extracted from the figure and validated (see README.md).\nRun **after step 1**: `RUNS` needs the channels to exist.\n\n**Step 2 – People:** 65 `Person` nodes (60 in Fig. 1, 5 named in Appendix B only).\n**Step 3 – RUNS:** `(:Person)-[:RUNS]->(:Channel)` for the 57 Appendix B channels found in Recfluence. Channels Lewis lists that are missing from Recfluence (banned or deleted) go on the person as `channelsNotInRecfluence`.\n**Step 4 – APPEARED_WITH:** 471 collaboration edges, period 2017-01-01 to 2018-04-01, each with `confidence` (high / medium / check), pixel scores and endnote video evidence.\n\nSteps 3 and 4 have *Execute Once* on their read node, so each runs once, not once per batch from the step before.",
+        "height": 560,
+        "width": 420,
+        "color": 5
+      },
+      "id": "3d7a9c67-4adc-488c-8946-24e7920187c9",
+      "name": "About steps 2–4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f98a6177-5ef3-431f-ad01-45e3d6d839cc",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_people.csv",
+        "options": {}
+      },
+      "id": "a5c6c175-d717-4a26-94fa-2951e0ffe0b1",
+      "name": "Read people CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "ae88ef8d-1d1a-4e75-a3f5-fb68677c77b7",
+      "name": "People CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 2 – Lewis people. Mode: Run Once for All Items.\n// Input: rows from lewis_people.csv (Extract from File → CSV).\nconst rows = $input.all().map(({ json: r }) => ({\n  id: r.person_id,\n  name: r.name,\n  figureLabel: r.figure_label || null,\n  inFigure: r.in_figure === 'true',\n  show: r.show || null,\n}));\n\nconst statement = `\nUNWIND $rows AS r\nMERGE (p:Person {id: r.id})\nSET p.name = r.name, p.figureLabel = r.figureLabel, p.inFigure = r.inFigure,\n    p.show = r.show, p.source = 'Lewis 2018, Appendix B'`;\n\nreturn [{ json: { step: 'People', count: rows.length, body: { statement, parameters: { rows } } } }];\n"
+      },
+      "id": "b44b0ba7-6cb5-4ba3-8e7b-5d07163c11b0",
+      "name": "People batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "c02a7383-c9b2-45c2-bbc1-175fa7c81ba1",
+      "name": "Neo4j: write people",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_channels.csv",
+        "options": {}
+      },
+      "id": "edb82d8a-a407-4e9f-8d08-6b2c5cd76830",
+      "name": "Read channels CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "f15f0b15-8227-40b5-a0a7-89581bf8633b",
+      "name": "Channels CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 3 – Person -[:RUNS]-> Channel. Mode: Run Once for All Items.\n// Input: rows from lewis_channels.csv (Extract from File → CSV).\n// Channels Lewis lists but Recfluence doesn't have are stored on the Person as a list, so the agent can mention them.\nconst all = $input.all().map(i => i.json);\n\nconst runs = all.filter(r => r.recfluence_channel_id).map(r => ({\n  personId: r.person_id,\n  channelId: r.recfluence_channel_id,\n  lewisName: r.lewis_channel_name,\n  listedByLewis: r.listed_by_lewis === 'true',\n  note: r.note || null,\n}));\n\nconst unmatched = {};\nfor (const r of all.filter(r => !r.recfluence_channel_id && r.lewis_channel_name)) {\n  (unmatched[r.person_id] ??= []).push(r.lewis_channel_name);\n}\nconst missing = Object.entries(unmatched).map(([personId, names]) => ({ personId, names }));\n\n// One request for both parts: two parallel requests touching the same Person nodes can deadlock.\nconst statement = `\nUNWIND $runs AS r\nMATCH (p:Person {id: r.personId})\nMATCH (c:Channel {channelId: r.channelId})\nMERGE (p)-[x:RUNS]->(c)\nSET x.lewisChannelName = r.lewisName, x.listedByLewis = r.listedByLewis,\n    x.note = r.note, x.source = 'Lewis 2018, Appendix B'\nWITH count(x) AS runsWritten\nCALL () {\n  UNWIND $missing AS m\n  MATCH (p:Person {id: m.personId})\n  SET p.channelsNotInRecfluence = m.names\n  RETURN count(p) AS peopleWithMissingChannels\n}\nRETURN runsWritten, peopleWithMissingChannels`;\n\nreturn [{ json: { step: 'RUNS', count: runs.length, body: { statement, parameters: { runs, missing } } } }];\n"
+      },
+      "id": "f9636cf6-cec3-4973-bb46-8309cdcba17f",
+      "name": "RUNS batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "6a54fe5a-8936-4749-99b7-107a3ea6eea0",
+      "name": "Neo4j: write RUNS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_edges.csv",
+        "options": {}
+      },
+      "id": "7245022f-8248-410d-8c6e-4b0d4c618a40",
+      "name": "Read edges CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "4fb901dc-953f-41b8-834c-96e895241a2c",
+      "name": "Edges CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 4 – Person -[:APPEARED_WITH]- Person. Mode: Run Once for All Items.\n// Input: rows from lewis_edges.csv (Extract from File → CSV).\nconst BATCH_SIZE = 5000;   // one request: parallel batches deadlocked on shared nodes (see notes)\nconst num = v => (v === '' || v == null ? null : Number(v));\n\nconst rows = $input.all().map(({ json: r }) => ({\n  a: r.a,\n  b: r.b,\n  confidence: r.confidence,            // high | medium | check\n  fromFigure: r.from_figure === 'true',\n  pixelCoverage: num(r.pixel_coverage),\n  pixelRidge: num(r.pixel_ridge),\n  note: r.note || null,\n  evidence: r.evidence ? r.evidence.split(' | ') : [],\n}));\n\nconst statement = `\nUNWIND $rows AS r\nMATCH (a:Person {id: r.a})\nMATCH (b:Person {id: r.b})\nMERGE (a)-[e:APPEARED_WITH]-(b)\nSET e.confidence = r.confidence, e.fromFigure = r.fromFigure,\n    e.pixelCoverage = r.pixelCoverage, e.pixelRidge = r.pixelRidge,\n    e.note = r.note, e.evidence = r.evidence,\n    e.source = 'Lewis 2018, Fig. 1', e.periodStart = date('2017-01-01'), e.periodEnd = date('2018-04-01')\nRETURN count(e) AS written`;\n\nconst out = [];\nfor (let i = 0; i < rows.length; i += BATCH_SIZE) {\n  const batch = rows.slice(i, i + BATCH_SIZE);\n  out.push({ json: { step: 'APPEARED_WITH', batch: out.length + 1, count: batch.length, body: { statement, parameters: { rows: batch } } } });\n}\nreturn out;\n"
+      },
+      "id": "399010aa-c3c5-4d52-b791-5f6e6668b751",
+      "name": "Edges batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "0142fc85-7a0d-4132-a02b-eb110b628f5b",
+      "name": "Neo4j: write APPEARED_WITH",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- *Neo4j* nodes: Basic Auth credential (`neo4j` + your password).\n- URL uses Neo4j's **Query API** (`/db/neo4j/query/v2`). Cypher errors come back as HTTP errors, so the node turns red by itself.\n- Each step sends **one** request with all rows. Parallel batches deadlocked (creating a relationship locks both end nodes), so we stopped splitting.\n- *Retry on fail* (3 tries) handles temporary Neo4j errors.",
+        "height": 200,
+        "width": 380,
+        "color": 3
+      },
+      "id": "96b60e02-282c-4520-bbaf-6fabf1f7199e",
+      "name": "Setup steps 2–4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read people CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read people CSV": {
+      "main": [
+        [
+          {
+            "node": "People CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "People CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "People batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "People batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write people",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write people": {
+      "main": [
+        [
+          {
+            "node": "Read channels CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read channels CSV": {
+      "main": [
+        [
+          {
+            "node": "Channels CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Channels CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "RUNS batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RUNS batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write RUNS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write RUNS": {
+      "main": [
+        [
+          {
+            "node": "Read edges CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read edges CSV": {
+      "main": [
+        [
+          {
+            "node": "Edges CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edges CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "Edges batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edges batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write APPEARED_WITH",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

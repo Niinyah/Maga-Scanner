@@ -1,0 +1,346 @@
+{
+  "name": "W4 – Pipeline research assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "b5cea92d-8c71-48d0-99a6-d2a9dc744417",
+      "name": "When chat message received",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "853a20e0-4ee8-4576-852f-afe8dd4b2fa3"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "/no_think\nYou are a research assistant for a student project about the so-called \"alternative influence network\" and the \"radicalization pipeline\" debate on YouTube. You help users understand how political YouTubers were connected and how researchers classified their channels.\n\n## Data you can access (only through your tools)\n- **Lewis (2018), Data & Society, \"Alternative Influence\":** who appeared in YouTube videos with whom, between January 2017 and April 2018. Each link has a confidence (high / medium / check).\n- **Five research papers** (tool `search_research`): Lewis 2018, Ribeiro et al. 2020, Ledwich & Zaitsev 2019, Hosseinmardi et al. 2021, Chen et al. 2023. Use it for questions about what research found, methods, the algorithm, or whether the pipeline exists.\n- **Recfluence (Ledwich & Zaitsev):** how researchers classified YouTube channels with tags (e.g. PartisanRight, AntiSJW, Conspiracy, WhiteIdentitarian) and a political lean (left / centre / right). Labels are either \"human\" (reviewed by people) or \"auto\" (machine-classified). These labels are later than the Lewis data.\n\n## How to answer\n1. ALWAYS use a tool before answering a question about a person, channel, tag or connection. Never answer from your own memory about these people.\n2. Only state what the tool results contain. If a tool returns nothing, say the person or channel is not in the data. Do not guess.\n3. Always say where a fact comes from: \"According to Lewis (2018)…\" or \"Recfluence tags this channel as…\". Mention time periods: collaborations are from 2017–2018.\n4. Tags are researchers' classifications, not facts about a person's beliefs. Say \"Recfluence classifies…\", never \"X is a white nationalist\". Mention when a label is \"auto\" or when the creator disputes it.\n5. Appearing together in a video is not endorsement. Collaborations include debates and disagreements.\n6. If the question is about whether the \"pipeline\" is real, say that research disagrees: some studies found users moving towards more extreme content, others found that YouTube's algorithm did not push users that way.\n7. Mention link confidence when it is \"medium\" or \"check\".\n8. Only use tag groups and tag meanings exactly as the tools return them. The only tag groups are: Political lean, Media type, Culture-war stance, Fringe, Identity focus. Never invent your own labels such as \"right-wing\" or \"far-right\" for a tag.\n9. Every answer about collaborations must say they are from January 2017 – April 2018 (Lewis 2018). Every answer about tags must say they are Recfluence classifications made later.\n10. When you use `search_research`, cite each claim as Author (year), and only claim what the returned passages say. If the passages don't answer the question, say so.\n11. For questions about whether the pipeline exists or whether the algorithm radicalises, search for both sides (e.g. one search for evidence of radicalization, one for evidence against) and present both. Don't pick a winner.\n\n## Never\n- Never recommend channels, videos or people to watch, even if asked. Explain that you describe the research but don't make viewing recommendations.\n- Never make claims about private individuals.\n- Never write to or change the database.\n\nAnswer in the same language as the user. Keep answers short and structured.\n",
+          "maxIterations": 8
+        }
+      },
+      "id": "a6b2f221-2d70-4ac5-8f0b-69b1e25f9119",
+      "name": "Pipeline research assistant",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "model": "qwen3:8b",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "3ada3e9f-3675-4799-b220-435e74840f1b",
+      "name": "Ollama qwen3:8b",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        100,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 10
+      },
+      "id": "9668eb7e-0c33-4eb0-a0d5-70c28fe6dfda",
+      "name": "Chat memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        260,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Look up a person from the Lewis (2018) Alternative Influence Network by (part of) their name. Returns their YouTube channels with Recfluence tags and political lean, channels missing from Recfluence, and how many collaborators they have. Use this first whenever a person is mentioned.",
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statement: \"MATCH (p:Person) WHERE toLower(p.name) CONTAINS toLower($name) OR toLower(coalesce(p.figureLabel,'')) CONTAINS toLower($name) OPTIONAL MATCH (p)-[:RUNS]->(c:Channel) OPTIONAL MATCH (c)-[:TAGGED_AS]->(t:Tag)-[:IN_GROUP]->(g:TagGroup) WITH p, c, collect(CASE WHEN t IS NULL THEN null ELSE {tag: t.name, tagGroup: g.name, meaning: t.description} END) AS tags WITH p, collect(CASE WHEN c IS NULL THEN null ELSE {channel: c.title, lean: c.lean, tags: tags, labelSource: c.labelSource, subscribers: c.subs, creatorNote: c.creatorNote} END) AS channels RETURN p.name AS name, p.inFigure AS inLewisFigure, p.show AS show, channels, p.channelsNotInRecfluence AS channelsMissingFromRecfluence, COUNT { (p)-[:APPEARED_WITH]-() } AS collaborators LIMIT 5\", parameters: { name: $fromAI('name', 'Name or part of the name of the person', 'string') }, accessMode: 'Read' }) }}",
+        "options": {}
+      },
+      "id": "b6544138-4d81-4f1f-876b-bd6f4b8c8f15",
+      "name": "find_person",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "List who a person appeared with in YouTube videos (Lewis 2018, Jan 2017 - Apr 2018), with the confidence of each link, video evidence where available, and how Recfluence tagged each collaborator.",
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statement: \"MATCH (p:Person)-[e:APPEARED_WITH]-(o:Person) WHERE toLower(p.name) CONTAINS toLower($name) OPTIONAL MATCH (o)-[:RUNS]->(:Channel)-[:TAGGED_AS]->(t:Tag) WITH p, o, e, collect(DISTINCT t.name) AS tags RETURN p.name AS person, o.name AS appearedWith, e.confidence AS confidence, e.evidence AS evidence, tags AS collaboratorTags ORDER BY CASE e.confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, appearedWith LIMIT 40\", parameters: { name: $fromAI('name', 'Name or part of the name of the person', 'string') }, accessMode: 'Read' }) }}",
+        "options": {}
+      },
+      "id": "b19d0a51-a51c-452b-aae7-aa1423637893",
+      "name": "person_collaborators",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Look up a YouTube channel by (part of) its title. Returns Recfluence classification: tags with their meaning and group, political lean, whether the label was set by human reviewers or automatically, notes and disputes, and which Lewis person runs it.",
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statement: \"MATCH (c:Channel) WHERE toLower(c.title) CONTAINS toLower($name) OPTIONAL MATCH (c)-[:TAGGED_AS]->(t:Tag)-[:IN_GROUP]->(g:TagGroup) OPTIONAL MATCH (p:Person)-[:RUNS]->(c) WITH c, collect(DISTINCT {tag: t.name, group: g.name, meaning: t.description}) AS tags, collect(DISTINCT p.name) AS runBy RETURN c.title AS channel, c.lean AS lean, c.subs AS subscribers, c.labelSource AS labelSource, c.humanReviews AS humanReviews, [x IN tags WHERE x.tag IS NOT NULL] AS tags, runBy, c.reviewerNote AS reviewerNote, c.creatorNote AS creatorNote, left(c.description, 300) AS description ORDER BY c.subs DESC LIMIT 5\", parameters: { name: $fromAI('name', 'Title or part of the title of the YouTube channel', 'string') }, accessMode: 'Read' }) }}",
+        "options": {}
+      },
+      "id": "f4f33ecb-4805-4368-98bb-bb002b085113",
+      "name": "find_channel",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Find the shortest chain of YouTube collaborations connecting two people in the Lewis (2018) network, e.g. how a mainstream figure is connected to a fringe figure. Returns the chain of names and the confidence of each link.",
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statement: \"MATCH (a:Person), (b:Person) WHERE toLower(a.name) CONTAINS toLower($from) AND toLower(b.name) CONTAINS toLower($to) AND a <> b WITH a, b LIMIT 1 MATCH path = shortestPath((a)-[:APPEARED_WITH*..6]-(b)) RETURN [n IN nodes(path) | n.name] AS chain, [r IN relationships(path) | r.confidence] AS linkConfidence, length(path) AS hops\", parameters: { from: $fromAI('from', 'Name of the first person', 'string'), to: $fromAI('to', 'Name of the second person', 'string') }, accessMode: 'Read' }) }}",
+        "options": {}
+      },
+      "id": "3ebc0b40-3498-41f3-b4c4-af2326bcd3a8",
+      "name": "path_between",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Explain a Recfluence tag (e.g. Conspiracy, WhiteIdentitarian, AntiSJW, PartisanRight): its meaning, its group, how many channels have it, and which people in the Lewis network run channels with that tag.",
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ statement: \"MATCH (t:Tag)-[:IN_GROUP]->(g:TagGroup) WHERE toLower(t.name) CONTAINS toLower($tag) OPTIONAL MATCH (p:Person)-[:RUNS]->(:Channel)-[:TAGGED_AS]->(t) RETURN t.name AS tag, g.name AS tagGroup, t.description AS meaning, COUNT { (:Channel)-[:TAGGED_AS]->(t) } AS channelsWithTag, collect(DISTINCT p.name) AS lewisPeopleWithTag\", parameters: { tag: $fromAI('tag', 'Tag name or part of it', 'string') }, accessMode: 'Read' }) }}",
+        "options": {}
+      },
+      "id": "193c5fcc-c87d-4d6f-940e-8a25778441fb",
+      "name": "tag_overview",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Search the five research papers on YouTube radicalization (Lewis 2018, Ribeiro et al. 2020, Ledwich & Zaitsev 2019, Hosseinmardi et al. 2021, Chen et al. 2023). Input a short search phrase describing what you want to find, e.g. 'recommendation algorithm pushes users to extreme content'. Returns the most relevant passages with author, year and title.",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": ""
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "query": "={{ $fromAI('query', 'Short search phrase describing what to find in the research papers', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "query",
+              "displayName": "query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a4fe67e8-b124-4d13-8f44-b2b5fab4be52",
+      "name": "search_research",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## W4 – Pipeline research assistant (agent)\n**Chat Trigger → AI Agent**, with a local LLM (Ollama `qwen3:8b`), chat memory, and 5 graph tools.\n\n**Why fixed tools:** an 8B local model is unreliable at writing Cypher. Each tool is pre-written, tested Cypher, and the model only picks the tool and fills in a name (`$fromAI`).\n\n**Guardrails**\n- Every tool sends `accessMode: Read`, so Neo4j refuses writes even if the model misbehaves.\n- The system prompt: answer only from tool results, cite the source and time period, label = researchers' classification (not a verdict), never recommend channels, note that the pipeline thesis is contested.\n\n**Tools:** `find_person`, `person_collaborators`, `find_channel`, `path_between`, `tag_overview` (graph) and `search_research` (vector).\n**Vector search:** `search_research` calls the sub-workflow *W4b – Search research*, which embeds the question and queries the `chunk_embedding` index. This is where graph RAG and vector RAG meet in one agent.",
+        "height": 520,
+        "width": 440,
+        "color": 5
+      },
+      "id": "5b1559fd-3f7b-4846-9fcb-c10551ea0e3d",
+      "name": "About W4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- *Ollama qwen3:8b*: create an Ollama credential with base URL `http://host.docker.internal:11434`.\n- Each tool node: the same Neo4j Basic Auth credential as the import.\n- Open the chat with the **Chat** button at the bottom of the canvas.\n\n**Test questions**\n1. Who is Dave Rubin, and how are his channels classified?\n2. Who did Jordan Peterson appear with?\n3. How is Jordan Peterson connected to Richard Spencer?\n4. What does the WhiteIdentitarian tag mean, and who in the network has it?\n5. Recommend me some channels like Stefan Molyneux. *(should refuse)*\n6. Does YouTube's algorithm push people towards extreme content? *(should cite both sides)*",
+        "height": 360,
+        "width": 440,
+        "color": 3
+      },
+      "id": "cac71dca-d1d3-444d-a46a-732ac2697af4",
+      "name": "Setup W4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama qwen3:8b": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_research": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "find_person": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "person_collaborators": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "find_channel": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "path_between": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "tag_overview": {
+      "ai_tool": [
+        [
+          {
+            "node": "Pipeline research assistant",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

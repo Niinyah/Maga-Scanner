@@ -1,0 +1,149 @@
+{
+  "name": "W1 – Reset + schema",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## W1 – Reset + schema\nRun **first**, every time you want a clean database. Order: **W1 → W2 step 1 → W2 steps 2–4 → W3**.\n\n**Statements, in order**\n1. Wipe all nodes and relationships.\n2. Uniqueness constraints on `Channel.channelId`, `Tag.name`, `TagGroup.name`, `Person.id`, `Paper.id`, `Chunk.id`. Constraints make `MERGE` safe and fast.\n3. The 18 Recfluence tags, with descriptions, grouped into 5 `TagGroup`s. This is the normalisation step: groups AI-proposed, human-checked.\n4. Vector index `chunk_embedding` on `Chunk.embedding`.\n\n**Why tags are created here:** creating them inside the parallel channel import caused duplicate tags (a race condition), and then a deadlock. Creating them once, up front, avoids both.\n\n⚠ `EMBEDDING_DIMENSIONS` in the Code node must match the W3 embedding model.",
+        "height": 520,
+        "width": 420,
+        "color": 5
+      },
+      "id": "4f08c9a0-72b1-4af1-8d13-a30a5fe37800",
+      "name": "About W1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "41af5c81-cc5a-4d00-9a92-35a33ff0bfbb",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W1 – Reset + schema. Mode: Run Once for All Items.\n// Produces one Neo4j Query API request per statement; the HTTP node sends them one at a time, in order.\n\n// Embedding size MUST match the embedding model used in W3:\n//   OpenAI text-embedding-3-small = 1536, Ollama nomic-embed-text = 768, Ollama mxbai-embed-large = 1024\nconst EMBEDDING_DIMENSIONS = 1536;\n\n// Recfluence tags, grouped. The groups are this project's normalisation (AI-proposed, human-checked).\n// Descriptions are paraphrased from the Recfluence README (github.com/markledwich2/Recfluence).\nconst TAGS = [\n  ['PartisanRight', 'Political lean', 'Mainly political content, exclusively critical of Democrats.'],\n  ['PartisanLeft', 'Political lean', 'Mainly political content, exclusively critical of Republicans.'],\n  ['Libertarian', 'Political lean', 'Individual liberty as the main principle; sceptical of state power, pro free markets.'],\n  ['Socialist', 'Political lean', 'Sees capitalism as the source of most problems; promotes a socialist/anarchist/Marxist alternative.'],\n  ['Mainstream News', 'Media type', 'Widely accepted, self-identified news outlet, listed by Ad Fontes or MediaBiasFactCheck.'],\n  ['StateFunded', 'Media type', 'Funded by a government.'],\n  ['LateNightTalkShow', 'Media type', 'Humorous monologues on the news, guest interviews and sketches.'],\n  ['Politician', 'Media type', 'Run on behalf of a currently running or in-office politician.'],\n  ['AntiSJW', 'Culture-war stance', 'Frequently criticises social justice (\"anti-woke\"); favours the marketplace of ideas.'],\n  ['SocialJustice', 'Culture-war stance', 'Promotes identity politics, intersectionality or social constructionism.'],\n  ['MRA', 'Culture-war stance', 'Manosphere: men\\'s rights, male grievances, pick-up, policing women\\'s sexuality.'],\n  ['AntiTheist', 'Culture-war stance', 'Self-identified atheist who actively criticises religion.'],\n  ['ReligiousConservative', 'Culture-war stance', 'Promotes Christianity or Judaism in the context of politics and culture.'],\n  ['Conspiracy', 'Fringe', 'Regularly promotes conspiracy theories (secret-plot explanations not widely accepted as true).'],\n  ['QAnon', 'Fringe', 'Promotes QAnon (listed by Recfluence as an example of conspiracy content; no separate definition).'],\n  ['WhiteIdentitarian', 'Fringe', 'Identifies with white/Western superiority; promotes white nationalism or an ethno-state.'],\n  ['Black', 'Identity focus', 'Black creators focused on the cultural or political issues of their community.'],\n  ['LGBT', 'Identity focus', 'LGBT creators focused on the cultural or political issues of their community.'],\n].map(([name, group, description]) => ({ name, group, description }));\n\nconst statements = [\n  ['Wipe all data', 'MATCH (n) DETACH DELETE n'],\n  ['Drop old vector index', 'DROP INDEX chunk_embedding IF EXISTS'],\n  ['Constraint Channel', 'CREATE CONSTRAINT channel_id IF NOT EXISTS FOR (c:Channel) REQUIRE c.channelId IS UNIQUE'],\n  ['Constraint Tag', 'CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE t.name IS UNIQUE'],\n  ['Constraint TagGroup', 'CREATE CONSTRAINT taggroup_name IF NOT EXISTS FOR (g:TagGroup) REQUIRE g.name IS UNIQUE'],\n  ['Constraint Person', 'CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE'],\n  ['Constraint Paper', 'CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE'],\n  ['Constraint Chunk', 'CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE'],\n  ['Tags + tag groups', `UNWIND $tags AS t\nMERGE (g:TagGroup {name: t.group})\nMERGE (tag:Tag {name: t.name})\nSET tag.description = t.description, tag.descriptionSource = 'Recfluence README (paraphrased)'\nMERGE (tag)-[:IN_GROUP {source: 'Project normalisation'}]->(g)`, { tags: TAGS }],\n  ['Vector index', `CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS\nFOR (c:Chunk) ON c.embedding\nOPTIONS {indexConfig: {\\`vector.dimensions\\`: ${EMBEDDING_DIMENSIONS}, \\`vector.similarity_function\\`: 'cosine'}}`],\n];\n\nreturn statements.map(([step, statement, parameters], i) => ({\n  json: { order: i + 1, step, body: parameters ? { statement, parameters } : { statement } },\n}));\n"
+      },
+      "id": "af3399ab-0cf1-414d-b10e-32fb16471244",
+      "name": "Schema statements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "70e6fe9a-2d13-419a-b3d3-cffe5d24794d",
+      "name": "One statement at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "536e382f-1c56-4ac1-8602-8448a5b1ffc5",
+      "name": "Neo4j: run statement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- *Neo4j* nodes: Basic Auth credential (`neo4j` + your password).\n- URL uses Neo4j's **Query API** (`/db/neo4j/query/v2`). Cypher errors come back as HTTP errors, so the node turns red by itself.\n- Each step sends **one** request with all rows. Parallel batches deadlocked (creating a relationship locks both end nodes), so we stopped splitting.\n- *Retry on fail* (3 tries) handles temporary Neo4j errors.\n- **Loop Over Items** sends the statements strictly one by one, in order. The wipe must finish before the constraints and tags are created.",
+        "height": 240,
+        "width": 420,
+        "color": 3
+      },
+      "id": "dec49bbb-3846-4a7b-a689-4e609ba3a0fe",
+      "name": "Setup W1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Schema statements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schema statements": {
+      "main": [
+        [
+          {
+            "node": "One statement at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One statement at a time": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Neo4j: run statement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: run statement": {
+      "main": [
+        [
+          {
+            "node": "One statement at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

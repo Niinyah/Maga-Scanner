@@ -1,0 +1,158 @@
+{
+  "name": "W4b – Search research (tool)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "query",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "412d7205-0c2d-4257-b4a1-42748ff9f43e",
+      "name": "When called by the agent",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', input: ['search_query: ' + $json.query] }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "32396d28-135f-4c0c-86a0-926e8b71ad98",
+      "name": "Ollama: embed question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Search research – build the Neo4j vector query. Mode: Run Once for All Items.\nconst embedding = $input.first().json.embeddings?.[0];\nif (!embedding) throw new Error('Ollama returned no embedding – is nomic-embed-text pulled and Ollama running?');\n\nconst statement = `\nCALL db.index.vector.queryNodes('chunk_embedding', $k, $embedding) YIELD node, score\nMATCH (p:Paper)-[:HAS_CHUNK]->(node)\nRETURN p.id AS paperId, p.title AS title, p.authors AS authors, p.year AS year, p.url AS url,\n       p.position AS paperPosition, round(score, 3) AS score, node.text AS text\nORDER BY score DESC`;\n\nreturn [{ json: { body: { statement, parameters: { k: 6, embedding }, accessMode: 'Read' } } }];\n"
+      },
+      "id": "db3e56a6-8691-430f-b046-3e865ec9f92e",
+      "name": "Vector query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "30608b8c-0aeb-4c6f-a88a-9dbd86fddf70",
+      "name": "Neo4j: vector search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Search research – turn Neo4j's response into readable passages with citations. Mode: Run Once for All Items.\nconst res = $input.first().json;\nif (res.errors?.length) throw new Error(`Neo4j error: ${res.errors[0].code} – ${res.errors[0].message}`);\nconst { fields, values } = res.data;\nconst rows = values.map(v => Object.fromEntries(fields.map((f, i) => [f, v[i]])));\nif (!rows.length) return [{ json: { response: 'No matching passages found in the research papers.' } }];\n\nconst cite = r => `${r.authors[0].split(' ').pop()}${r.authors.length > 1 ? ' et al.' : ''} (${r.year})`;\nconst passages = rows.map((r, i) =>\n  `[${i + 1}] ${cite(r)}, \"${r.title}\" – similarity ${r.score}\\n${r.text}`).join('\\n\\n');\nconst papers = [...new Map(rows.map(r => [r.paperId, r])).values()]\n  .map(r => `- ${cite(r)}: ${r.paperPosition} <${r.url}>`).join('\\n');\n\nreturn [{ json: { response: `PASSAGES\\n\\n${passages}\\n\\nPAPERS (one-line summaries written for this project)\\n${papers}` } }];\n"
+      },
+      "id": "f42411cb-327a-43cc-ba5c-f8d959b910c1",
+      "name": "Format passages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Search research (sub-workflow, used as an agent tool)\nCalled by W4 with a `query`. Returns the 6 most similar paper passages with citations.\n\n1. Embeds the question with Ollama `nomic-embed-text`, using the `search_query:` prefix (documents were embedded with `search_document:`).\n2. Queries the `chunk_embedding` vector index in Neo4j (read-only) and joins each chunk to its `Paper`.\n3. Formats the passages as `[n] Author (year), \"Title\" – similarity` + text, plus each paper's one-line position.\n\n**Setup:** Neo4j credential in *Neo4j: vector search*. **Publish** this workflow: n8n runs the published version when another workflow calls it.",
+        "height": 400,
+        "width": 440,
+        "color": 5
+      },
+      "id": "19fb6f46-1c89-49ff-95d3-227ef2ee8732",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "When called by the agent": {
+      "main": [
+        [
+          {
+            "node": "Ollama: embed question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama: embed question": {
+      "main": [
+        [
+          {
+            "node": "Vector query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector query": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: vector search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: vector search": {
+      "main": [
+        [
+          {
+            "node": "Format passages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

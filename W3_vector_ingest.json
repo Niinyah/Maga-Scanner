@@ -1,0 +1,390 @@
+{
+  "name": "W3 – Vector ingest: papers",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## W3 – Vector ingest: research papers → Neo4j\nRun **after** the full graph import (the import wipes everything, chunks included).\n\n1. Reads every PDF in `/files` and extracts the text.\n2. **Chunk papers** identifies each paper (arXiv number, filename or title), drops the reference list, and splits the text into ~1000-character chunks with 150 characters of overlap, ending on sentence boundaries where possible.\n3. Writes one `Paper` node per paper (title, authors, year, URL, stated position) and links it into the graph: Lewis 2018 `DESCRIBES` every `Person`; Ledwich & Zaitsev `CLASSIFIES` every `Channel` (they made the Recfluence labels). Old chunks are deleted first.\n4. **Loop**: batches of 24 chunks → embeddings from Ollama `nomic-embed-text` (768 dims, with the `search_document:` prefix that model expects) → written as `(:Paper)-[:HAS_CHUNK]->(:Chunk {text, embedding})`.\n\nThe vector index `chunk_embedding` (created by the import) indexes `Chunk.embedding` automatically.\n\n**Expected:** 5 papers, a few hundred chunks. Re-running is safe.",
+        "height": 560,
+        "width": 460,
+        "color": 5
+      },
+      "id": "b952ab6a-c997-4904-aee9-39b7a3485b1d",
+      "name": "About W3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "bd6cb94d-d8f1-4a6b-bb16-514011745347",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/*.pdf",
+        "options": {}
+      },
+      "id": "c23c4143-d65c-4974-b8ce-1596c66bb477",
+      "name": "Read PDFs",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {
+          "joinPages": true,
+          "keepSource": "both"
+        }
+      },
+      "id": "34544d86-5291-49f4-8f5c-1894eaa6cd9c",
+      "name": "PDF to text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W3 – Identify papers, clean text, split into chunks. Mode: Run Once for All Items.\n// Input: one item per PDF from \"Extract from File\" (PDF, keep source = both), so $json.text + binary.data.fileName.\nconst CHUNK_SIZE = 1000;   // characters per chunk (nomic-embed-text handles ~2000 tokens, so this is safe)\nconst OVERLAP = 150;       // characters repeated between neighbouring chunks, so sentences aren't cut off\nconst BATCH_SIZE = 24;     // chunks per embedding request\n\n// Known papers. Matched on filename (incl. arXiv number) first, then on title words or author surname on the first pages.\nconst PAPERS = [\n  { id: 'lewis2018', match: ['alternative_influence', 'alternative influence'], title: 'Alternative Influence: Broadcasting the Reactionary Right on YouTube',\n    authors: ['Rebecca Lewis'], year: 2018, venue: 'Data & Society', url: 'https://datasociety.net/library/alternative-influence/',\n    position: 'Qualitative network study: maps guest appearances between political YouTubers and argues the network works as a pathway from mainstream to extreme views.' },\n  { id: 'ribeiro2020', match: ['ribeiro', '1908.08313', 'auditing radicalization pathways'], title: 'Auditing Radicalization Pathways on YouTube',\n    authors: ['Manoel Horta Ribeiro', 'Raphael Ottoni', 'Robert West', 'Virgílio A. F. Almeida', 'Wagner Meira Jr.'], year: 2020, venue: 'ACM FAT* 2020', url: 'https://arxiv.org/abs/1908.08313',\n    position: 'Supports the pipeline thesis: commenting users migrate from milder (IDW, Alt-lite) to more extreme (Alt-right) channels; recommendations make Alt-lite reachable from IDW.' },\n  { id: 'ledwich2019', match: ['ledwich', '1912.11211', 'algorithmic extremism'], title: 'Algorithmic Extremism: Examining YouTube\\'s Rabbit Hole of Radicalization',\n    authors: ['Mark Ledwich', 'Anna Zaitsev'], year: 2019, venue: 'arXiv / First Monday', url: 'https://arxiv.org/abs/1912.11211',\n    position: 'Against the algorithmic pipeline: logged-out recommendations favoured mainstream channels over fringe ones. Source of the Recfluence channel labels.' },\n  { id: 'hosseinmardi2021', match: ['hosseinmardi', '2011.12843', 'consumption of radical content', 'right-wing echo chambers'], title: 'Examining the consumption of radical content on YouTube',\n    authors: ['Homa Hosseinmardi', 'Amir Ghasemian', 'Aaron Clauset', 'Markus Mobius', 'David M. Rothschild', 'Duncan J. Watts'], year: 2021, venue: 'PNAS', url: 'https://arxiv.org/abs/2011.12843',\n    position: 'Demand side: real user browsing data shows radical content consumption is driven mostly by user preferences, not by recommendations.' },\n  { id: 'chen2023', match: ['chen', '2204.10921', 'subscriptions and external links'], title: 'Subscriptions and external links help drive resentful users to alternative and extremist YouTube videos',\n    authors: ['Annie Y. Chen', 'Brendan Nyhan', 'Jason Reifler', 'Ronald E. Robertson', 'Christo Wilson'], year: 2023, venue: 'Science Advances', url: 'https://arxiv.org/abs/2204.10921',\n    position: 'Exposure to alternative/extremist videos is concentrated among a small group of already-resentful users who arrive via subscriptions and external links, rarely via recommendations.' },\n];\n\nfunction identify(fileName, text) {\n  const f = (fileName || '').toLowerCase();\n  const head = text.slice(0, 4000).toLowerCase();\n  return PAPERS.find(p => p.match.some(m => f.includes(m.replace(/ /g, '_')) || f.includes(m)))\n      ?? PAPERS.find(p => p.match.slice(1).some(m => head.includes(m)) || head.includes(p.title.toLowerCase().slice(0, 40)))\n      ?? PAPERS.find(p => new RegExp(`\\\\b${p.match[0]}\\\\b`).test(head))   // author surname on the first page\n      ?? null;\n}\n\nfunction clean(text) {\n  let t = text\n    .replace(/\\r/g, '')\n    .replace(/(\\w)-\\n(\\w)/g, '$1$2')          // re-join words hyphenated across lines\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/\\n{2,}/g, '\\n\\n');\n  // Drop the reference list / endnotes: citations add noise to semantic search\n  const m = [...t.matchAll(/\\n\\s*(References|REFERENCES|Bibliography|ENDNOTES|Endnotes)\\s*\\n/g)].pop();\n  if (m && m.index > t.length * 0.5) t = t.slice(0, m.index);\n  return t.replace(/\\s+/g, ' ').trim();\n}\n\nfunction chunk(text) {\n  const out = [];\n  let start = 0;\n  while (start < text.length) {\n    let end = Math.min(start + CHUNK_SIZE, text.length);\n    if (end < text.length) {                       // end on a sentence boundary when one is close\n      const stop = text.lastIndexOf('. ', end);\n      if (stop > start + CHUNK_SIZE * 0.6) end = stop + 1;\n    }\n    const piece = text.slice(start, end).trim();\n    if (piece.length > 80) out.push(piece);         // skip tiny fragments (page numbers etc.)\n    if (end >= text.length) break;\n    start = Math.max(end - OVERLAP, start + 1);\n    const space = text.indexOf(' ', start);          // don't start mid-word\n    if (space !== -1 && space - start < 30) start = space + 1;\n  }\n  return out;\n}\n\nconst papers = [], chunks = [], skipped = [];\nfor (const item of $input.all()) {\n  const fileName = item.binary?.data?.fileName ?? item.json.fileName ?? '';\n  const raw = item.json.text ?? '';\n  const meta = identify(fileName, raw);\n  if (!meta) { skipped.push(fileName || '(unnamed pdf)'); continue; }\n  const { match, ...paper } = meta;\n  const pieces = chunk(clean(raw));\n  papers.push({ ...paper, fileName, chunkCount: pieces.length });\n  pieces.forEach((text, index) => chunks.push({\n    id: `${paper.id}-${String(index).padStart(4, '0')}`, paperId: paper.id, index, text,\n    // nomic-embed-text expects this prefix on documents (queries use \"search_query: \")\n    embedText: `search_document: ${paper.title}. ${text}`,\n  }));\n}\n\nconst batches = [];\nfor (let i = 0; i < chunks.length; i += BATCH_SIZE) batches.push(chunks.slice(i, i + BATCH_SIZE));\n\nreturn [{ json: { papers, skipped, chunkCount: chunks.length, batches } }];\n"
+      },
+      "id": "bebc7cdb-6b9c-44e4-99e9-f2114f64cf2c",
+      "name": "Chunk papers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W3 – Paper nodes + links into the graph. Mode: Run Once for All Items.\n// Removes old chunks first, so re-running W3 after changing the chunking never leaves stale chunks behind.\nconst { papers, skipped } = $input.first().json;\nif (!papers.length) throw new Error(`No known papers found. Skipped files: ${skipped.join(', ') || 'none'}`);\n\nconst statement = `\nCALL () { MATCH (c:Chunk) DETACH DELETE c }\nUNWIND $papers AS p\nMERGE (paper:Paper {id: p.id})\nSET paper.title = p.title, paper.authors = p.authors, paper.year = p.year, paper.venue = p.venue,\n    paper.url = p.url, paper.position = p.position, paper.fileName = p.fileName, paper.chunkCount = p.chunkCount\nWITH collect(paper) AS written\nCALL () {\n  MATCH (lewis:Paper {id: 'lewis2018'}), (person:Person)\n  MERGE (lewis)-[:DESCRIBES {source: 'Lewis 2018, Fig. 1 + Appendix B'}]->(person)\n}\nCALL () {\n  MATCH (ledwich:Paper {id: 'ledwich2019'}), (c:Channel)\n  MERGE (ledwich)-[:CLASSIFIES {source: 'Recfluence dataset (Ledwich & Zaitsev)'}]->(c)\n}\nRETURN size(written) AS papers`;\n\nreturn [{ json: { papers: papers.map(p => `${p.id} (${p.chunkCount} chunks)`), skipped, body: { statement, parameters: { papers } } } }];\n"
+      },
+      "id": "08be11f8-865c-44be-b7d4-3886c2285054",
+      "name": "Paper nodes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "bb5e5761-39a5-424a-bd14-1af8c6f1d428",
+      "name": "Neo4j: write papers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// W3 – One item per batch of chunks, for the embedding loop. Mode: Run Once for All Items.\nconst { batches } = $('Chunk papers').first().json;\nreturn batches.map((chunks, i) => ({ json: { batch: i + 1, of: batches.length, chunks } }));\n"
+      },
+      "id": "8a6d450d-a91c-484a-b9ea-a0f409511761",
+      "name": "Split into batches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "149fec11-bd7d-4718-ab40-fcd3082015a6",
+      "name": "One batch at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embed",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', input: $json.chunks.map(c => c.embedText) }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "c3b9e3ee-fd3d-4e72-8aff-90baef93cc51",
+      "name": "Ollama: embed chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        120
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "// W3 – Join embeddings back onto their chunks and build the Neo4j write. Mode: Run Once for All Items.\nconst { chunks, batch, of } = $('One batch at a time').first().json;\nconst { embeddings } = $input.first().json;\nif (!embeddings || embeddings.length !== chunks.length) {\n  throw new Error(`Batch ${batch}: got ${embeddings?.length ?? 0} embeddings for ${chunks.length} chunks`);\n}\nif (embeddings[0].length !== 768) {\n  throw new Error(`Embedding has ${embeddings[0].length} dimensions; the vector index expects 768. Check the model name.`);\n}\nconst rows = chunks.map((c, i) => ({ id: c.id, paperId: c.paperId, index: c.index, text: c.text, embedding: embeddings[i] }));\n\nconst statement = `\nUNWIND $rows AS r\nMATCH (p:Paper {id: r.paperId})\nMERGE (c:Chunk {id: r.id})\nSET c.paperId = r.paperId, c.index = r.index, c.text = r.text, c.embedding = r.embedding\nMERGE (p)-[:HAS_CHUNK]->(c)\nRETURN count(c) AS written`;\n\nreturn [{ json: { batch, of, count: rows.length, body: { statement, parameters: { rows } } } }];\n"
+      },
+      "id": "fc4c8ed9-14b5-4651-8006-ddd3205d1e24",
+      "name": "Join embeddings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "f2cd4749-90ab-4fc9-882d-0b193a91cfc4",
+      "name": "Neo4j: write chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        120
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- `ollama pull nomic-embed-text` on the Mac. Ollama must be running.\n- The full graph import must have `EMBEDDING_DIMENSIONS = 768` and must have been run.\n- Neo4j nodes: your Neo4j credential. The Ollama node needs no credential.\n\n**Check afterwards (Neo4j Browser)**\n`MATCH (p:Paper) RETURN p.id, p.chunkCount, COUNT { (p)-[:HAS_CHUNK]->() }`\n`SHOW VECTOR INDEXES` → state ONLINE, population 100%",
+        "height": 300,
+        "width": 460,
+        "color": 3
+      },
+      "id": "2ec9c94b-2c86-473a-bb36-fe3041d64482",
+      "name": "Setup W3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "c0b72932-a866-447c-8fac-6b54349390cc",
+      "name": "Check write papers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1210,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "463bdb43-7794-4e21-b3d5-24e6c80b330f",
+      "name": "Check write chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2330,
+        290
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read PDFs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read PDFs": {
+      "main": [
+        [
+          {
+            "node": "PDF to text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF to text": {
+      "main": [
+        [
+          {
+            "node": "Chunk papers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk papers": {
+      "main": [
+        [
+          {
+            "node": "Paper nodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Paper nodes": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write papers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write papers": {
+      "main": [
+        [
+          {
+            "node": "Check write papers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split into batches": {
+      "main": [
+        [
+          {
+            "node": "One batch at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One batch at a time": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Ollama: embed chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama: embed chunks": {
+      "main": [
+        [
+          {
+            "node": "Join embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Join embeddings": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write chunks": {
+      "main": [
+        [
+          {
+            "node": "Check write chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write papers": {
+      "main": [
+        [
+          {
+            "node": "Split into batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write chunks": {
+      "main": [
+        [
+          {
+            "node": "One batch at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

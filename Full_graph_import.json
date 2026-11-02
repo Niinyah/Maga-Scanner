@@ -1,0 +1,704 @@
+{
+  "name": "Full graph import (W1 + W2)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "cf9370a1-52d0-4557-ac6f-cea63f2a4c6e",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W1 – Reset + schema. Mode: Run Once for All Items.\n// Produces one Neo4j Query API request per statement; the HTTP node sends them one at a time, in order.\n\n// Embedding size MUST match the embedding model used in W3:\n//   OpenAI text-embedding-3-small = 1536, Ollama nomic-embed-text = 768, Ollama mxbai-embed-large = 1024\nconst EMBEDDING_DIMENSIONS = 1536;\n\n// Recfluence tags, grouped. The groups are this project's normalisation (AI-proposed, human-checked).\n// Descriptions are paraphrased from the Recfluence README (github.com/markledwich2/Recfluence).\nconst TAGS = [\n  ['PartisanRight', 'Political lean', 'Mainly political content, exclusively critical of Democrats.'],\n  ['PartisanLeft', 'Political lean', 'Mainly political content, exclusively critical of Republicans.'],\n  ['Libertarian', 'Political lean', 'Individual liberty as the main principle; sceptical of state power, pro free markets.'],\n  ['Socialist', 'Political lean', 'Sees capitalism as the source of most problems; promotes a socialist/anarchist/Marxist alternative.'],\n  ['Mainstream News', 'Media type', 'Widely accepted, self-identified news outlet, listed by Ad Fontes or MediaBiasFactCheck.'],\n  ['StateFunded', 'Media type', 'Funded by a government.'],\n  ['LateNightTalkShow', 'Media type', 'Humorous monologues on the news, guest interviews and sketches.'],\n  ['Politician', 'Media type', 'Run on behalf of a currently running or in-office politician.'],\n  ['AntiSJW', 'Culture-war stance', 'Frequently criticises social justice (\"anti-woke\"); favours the marketplace of ideas.'],\n  ['SocialJustice', 'Culture-war stance', 'Promotes identity politics, intersectionality or social constructionism.'],\n  ['MRA', 'Culture-war stance', 'Manosphere: men\\'s rights, male grievances, pick-up, policing women\\'s sexuality.'],\n  ['AntiTheist', 'Culture-war stance', 'Self-identified atheist who actively criticises religion.'],\n  ['ReligiousConservative', 'Culture-war stance', 'Promotes Christianity or Judaism in the context of politics and culture.'],\n  ['Conspiracy', 'Fringe', 'Regularly promotes conspiracy theories (secret-plot explanations not widely accepted as true).'],\n  ['QAnon', 'Fringe', 'Promotes QAnon (listed by Recfluence as an example of conspiracy content; no separate definition).'],\n  ['WhiteIdentitarian', 'Fringe', 'Identifies with white/Western superiority; promotes white nationalism or an ethno-state.'],\n  ['Black', 'Identity focus', 'Black creators focused on the cultural or political issues of their community.'],\n  ['LGBT', 'Identity focus', 'LGBT creators focused on the cultural or political issues of their community.'],\n].map(([name, group, description]) => ({ name, group, description }));\n\nconst statements = [\n  ['Wipe all data', 'MATCH (n) DETACH DELETE n'],\n  ['Drop old vector index', 'DROP INDEX chunk_embedding IF EXISTS'],\n  ['Constraint Channel', 'CREATE CONSTRAINT channel_id IF NOT EXISTS FOR (c:Channel) REQUIRE c.channelId IS UNIQUE'],\n  ['Constraint Tag', 'CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE t.name IS UNIQUE'],\n  ['Constraint TagGroup', 'CREATE CONSTRAINT taggroup_name IF NOT EXISTS FOR (g:TagGroup) REQUIRE g.name IS UNIQUE'],\n  ['Constraint Person', 'CREATE CONSTRAINT person_id IF NOT EXISTS FOR (p:Person) REQUIRE p.id IS UNIQUE'],\n  ['Constraint Paper', 'CREATE CONSTRAINT paper_id IF NOT EXISTS FOR (p:Paper) REQUIRE p.id IS UNIQUE'],\n  ['Constraint Chunk', 'CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.id IS UNIQUE'],\n  ['Tags + tag groups', `UNWIND $tags AS t\nMERGE (g:TagGroup {name: t.group})\nMERGE (tag:Tag {name: t.name})\nSET tag.description = t.description, tag.descriptionSource = 'Recfluence README (paraphrased)'\nMERGE (tag)-[:IN_GROUP {source: 'Project normalisation'}]->(g)`, { tags: TAGS }],\n  ['Vector index', `CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS\nFOR (c:Chunk) ON c.embedding\nOPTIONS {indexConfig: {\\`vector.dimensions\\`: ${EMBEDDING_DIMENSIONS}, \\`vector.similarity_function\\`: 'cosine'}}`],\n];\n\nreturn statements.map(([step, statement, parameters], i) => ({\n  json: { order: i + 1, step, body: parameters ? { statement, parameters } : { statement } },\n}));\n"
+      },
+      "id": "96ac6094-679d-4996-b1bf-a2e2ceebf7f6",
+      "name": "Schema statements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "dafd6ad1-66c1-4bee-898f-f3575ec3456f",
+      "name": "One statement at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "1baa699a-c3e5-4a0e-8eca-3e32eca13765",
+      "name": "Neo4j: run statement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/recfluence.jsonl",
+        "options": {}
+      },
+      "id": "313c7a06-041c-4535-9aa9-1f2801065d87",
+      "name": "Read Recfluence file",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        920,
+        400
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "id": "1719cbdf-7d26-4a6a-8673-6cb7fc3029ee",
+      "name": "File to text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 1 – Recfluence channels: parse, filter, clean, batch\n// Mode: Run Once for All Items.\n// Input: output of an 'Extract from File' node (operation: Extract From Text File), i.e. the file text in $json.data.\n// Written without Buffer/this.helpers so it runs in n8n's sandboxed task runner.\n\nconst MIN_SUBS = 100000;\nconst BATCH_SIZE = 5000;   // one request: parallel batches deadlocked on shared nodes (see notes)\n\n// Channels from the Lewis network, always imported even below the filter\nconst LEWIS_IDS = new Set([\n  'UC-yewGHQbNFpDrGM0diZOLA','UC0aVoboXBUx2-tVIWHc3W2Q','UC0rZoXAD5lxgBHMsjrGwWWQ','UC2h3yPmh9TfQv2z3aTDTHHA',\n  'UC554eY5jNUfDq3yDOJYirOQ','UC5tEELgWBfKbA9fVPRzBzPQ','UC6cMYsKMx6XicFcFm7mTsmA','UC6wdP5hTf_phre6Q3kFiV2g',\n  'UC87YBeLMwXhgaw5tcCxsXgQ','UCAgBUlIpzlJaE0693J3s97w','UCAldq8BAAGdsX9UyK_09-ZA','UCC3L8QaxqEGUiBC252GHy3w',\n  'UCDVb4m_5QHhZElT47E1oODg','UCDmCBKaKOtOrEqgsL4-3C8Q','UCEE8w-v6Gg4j3ze3oX-urEw','UCFpvg5yg5fMda91yiI1owSQ',\n  'UCG749Dj4V2fKa143f8sE60Q','UCHlZ46QmqDdXFMbsaF8evIg','UCIveFvW-ARp_B_RckhweNJw','UCJdKr0Bgd_5saZYqLCa9mng',\n  'UCKEt1xKVBLuL175dkk8rqLg','UCL0u5uz7KZ9q-pe-VC8TY-w','UCL9PlYkRD3Q-RZca6CCnPKw','UCLJkNhB1Eg_mXx0quUju0Og',\n  'UCL_f53ZEJxp8TtlOkHwMV9Q','UCLfhh63n0fWn0gXXKQ5NWvw','UCMLbmp5tcLxzahMLTmeM4lg','UCN0-RRaxMgh86eOwndAklxw',\n  'UCNAxrHudMfdzNi6NxruKPLw','UCOtFVJUoek4TKZAaeQVhiLA','UCPGxwlhPEJE89bT4gB6rzhg','UCSTy-H5lSiCcozas32sfJlQ',\n  'UCT9D87j5W7PtE7NHOR5DUOQ','UCZWlSUNDvCCS1hBiXV0zKcA','UCZeP6H2mELnRI9imY5Iga0g','UCaeO5vkdj5xOQHp4UmIN6dw',\n  'UCctjGdm2NlMNzIlxz02IsXA','UCdf14z6V0MWNeVcbAz0r8wQ','UCe02lGcO-ahAURWuxAJnjdA','UCesrUK_dMDBZAf7cnjQPdgQ',\n  'UCfYbb7nga6-icsFWWgS-kWw','UCittVh8imKanO_5KohzDbpg','UCka_dz0F1gYuvN8LTefNcJQ','UCl3RCEtooHD5bhPCHJw3btA',\n  'UClMWnUHbxJKJLUgloN1mPUA','UCla6APLHX6W3FeNLc8PYuvg','UCmrLCXSDScliR7q8AxxjvXg','UCnQC_G5Xsjhp9fEJKuIcrSw',\n  'UCowcNKm1w2GGw5U_XQeduhg','UCpbyOgUSjTSPpvVUAT2OyHw','UCpiCH7qvGVlzMOqy3dncA5Q','UCr4kgAUTFkGIwlWSodg43QA',\n  'UCr_Q-bPpcw5fJ-Oow1BW1NQ','UCyhEZKz-LOwgktptEOh6_Iw','UCzQUP1qoWDoEbmsQxvdjxgQ',\n]);\n\n// Repair text that was UTF-8 but got decoded as Windows-1252 (\"GariÃ©py\" -> \"Gariépy\")\nconst CP1252 = {0x20AC:0x80,0x201A:0x82,0x0192:0x83,0x201E:0x84,0x2026:0x85,0x2020:0x86,0x2021:0x87,0x02C6:0x88,\n  0x2030:0x89,0x0160:0x8A,0x2039:0x8B,0x0152:0x8C,0x017D:0x8E,0x2018:0x91,0x2019:0x92,0x201C:0x93,0x201D:0x94,\n  0x2022:0x95,0x2013:0x96,0x2014:0x97,0x02DC:0x98,0x2122:0x99,0x0161:0x9A,0x203A:0x9B,0x0153:0x9C,0x017E:0x9E,0x0178:0x9F};\nfunction utf8Decode(bytes) {\n  // returns null if the bytes are not valid UTF-8\n  let out = '', i = 0;\n  while (i < bytes.length) {\n    const b = bytes[i];\n    let cp, n;\n    if (b < 0x80) { cp = b; n = 0; }\n    else if (b >= 0xC2 && b < 0xE0) { cp = b & 0x1F; n = 1; }\n    else if (b >= 0xE0 && b < 0xF0) { cp = b & 0x0F; n = 2; }\n    else if (b >= 0xF0 && b < 0xF5) { cp = b & 0x07; n = 3; }\n    else return null;\n    if (i + n >= bytes.length + (n ? 0 : 1)) return null;\n    for (let k = 1; k <= n; k++) {\n      const c = bytes[i + k];\n      if (c === undefined || (c & 0xC0) !== 0x80) return null;\n      cp = (cp << 6) | (c & 0x3F);\n    }\n    out += String.fromCodePoint(cp);\n    i += n + 1;\n  }\n  return out;\n}\nfunction decodeRun(run) {\n  const bytes = [];\n  for (const ch of run) {\n    const c = ch.codePointAt(0);\n    bytes.push(c < 0x100 ? c : CP1252[c]);\n  }\n  const out = utf8Decode(bytes);\n  return out === null ? run : out;   // only accept a clean repair\n}\nfunction fixText(s) {\n  if (!s || !/[ÃÂâ]/.test(s)) return s;\n  s = s.replace(/Â(?=\\s)/g, '');        // \"Â \" is a mangled non-breaking space\n  // repair each run of suspicious characters separately, so one bad spot can't block the rest\n  const cp = Object.keys(CP1252).map(k => String.fromCodePoint(+k)).join('');\n  return s.replace(new RegExp(`[\\u0080-\\u00FF${cp}]+`, 'gu'), decodeRun);\n}\n\nconst LEAN = { L: 'left', C: 'centre', R: 'right' };\n\nconst text = $input.first().json.data;\nif (typeof text !== 'string') {\n  throw new Error('Expected the file text in $json.data – put an \"Extract from File\" node (Extract From Text File) before this node.');\n}\nconst lines = text.split('\\n').filter(l => l.trim());\n\nconst rows = [];\nfor (const line of lines) {\n  const r = JSON.parse(line);\n  const keep = (r.reviewsHuman >= 1 && r.subs >= MIN_SUBS) || LEWIS_IDS.has(r.channelId);\n  if (!keep) continue;\n  rows.push({\n    channelId: r.channelId,\n    title: fixText(r.channelTitle),\n    subs: r.subs,\n    views: r.channelViews,\n    lean: LEAN[r.lr] ?? null,\n    humanReviews: r.reviewsHuman,\n    labelSource: r.reviewsHuman >= 1 ? 'human' : 'auto',\n    tags: r.tags ?? [],\n    description: fixText(r.description) || null,\n    reviewerNote: r.publicReviewerNotes,\n    creatorNote: r.publicCreatorNotes,\n    inLewis: LEWIS_IDS.has(r.channelId),\n  });\n}\n\nconst CYPHER = `\nUNWIND $rows AS r\nMERGE (c:Channel {channelId: r.channelId})\nSET c.title = r.title, c.subs = r.subs, c.views = r.views,\n    c.lean = r.lean, c.humanReviews = r.humanReviews,\n    c.labelSource = r.labelSource, c.description = r.description,\n    c.reviewerNote = r.reviewerNote, c.creatorNote = r.creatorNote,\n    c.inLewis = r.inLewis, c.source = 'Recfluence'\nWITH c, r\nUNWIND r.tags AS t\nMATCH (tag:Tag {name: t})            // tags are created by W1, so batches never fight over them\nMERGE (c)-[:TAGGED_AS {source: 'Recfluence'}]->(tag)`;\n\n// One output item per batch; the HTTP Request node sends $json.body to Neo4j's Query API\nconst out = [];\nfor (let i = 0; i < rows.length; i += BATCH_SIZE) {\n  const batch = rows.slice(i, i + BATCH_SIZE);\n  out.push({ json: {\n    batch: out.length + 1,\n    count: batch.length,\n    body: { statement: CYPHER, parameters: { rows: batch } },\n  } });\n}\nreturn out;\n"
+      },
+      "id": "99f3dcad-c771-4875-b684-16cda279e9ef",
+      "name": "Filter, clean, batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "c3d639f1-4243-4928-af67-d11f3a759b23",
+      "name": "Neo4j: write channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_people.csv",
+        "options": {}
+      },
+      "id": "26a8d7e9-8973-49f6-971c-73c26f17201e",
+      "name": "Read people CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        -1080,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "e93794df-ecd3-42ff-9c6e-a7e7a8fad09a",
+      "name": "People CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -860,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 2 – Lewis people. Mode: Run Once for All Items.\n// Input: rows from lewis_people.csv (Extract from File → CSV).\nconst rows = $input.all().map(({ json: r }) => ({\n  id: r.person_id,\n  name: r.name,\n  figureLabel: r.figure_label || null,\n  inFigure: r.in_figure === 'true',\n  show: r.show || null,\n}));\n\nconst statement = `\nUNWIND $rows AS r\nMERGE (p:Person {id: r.id})\nSET p.name = r.name, p.figureLabel = r.figureLabel, p.inFigure = r.inFigure,\n    p.show = r.show, p.source = 'Lewis 2018, Appendix B'`;\n\nreturn [{ json: { step: 'People', count: rows.length, body: { statement, parameters: { rows } } } }];\n"
+      },
+      "id": "3d34ac36-b0d3-4ba7-bfe3-453aa92b5f43",
+      "name": "People batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "cc13f5ca-93fc-4cdd-92a5-282813cb0e87",
+      "name": "Neo4j: write people",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -420,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_channels.csv",
+        "options": {}
+      },
+      "id": "ed11e74a-6169-47f1-8e12-0d76f5d03665",
+      "name": "Read channels CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        800
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "cbecf202-d507-46e9-9c9c-b4259694c7ae",
+      "name": "Channels CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        20,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 3 – Person -[:RUNS]-> Channel. Mode: Run Once for All Items.\n// Input: rows from lewis_channels.csv (Extract from File → CSV).\n// Channels Lewis lists but Recfluence doesn't have are stored on the Person as a list, so the agent can mention them.\nconst all = $input.all().map(i => i.json);\n\nconst runs = all.filter(r => r.recfluence_channel_id).map(r => ({\n  personId: r.person_id,\n  channelId: r.recfluence_channel_id,\n  lewisName: r.lewis_channel_name,\n  listedByLewis: r.listed_by_lewis === 'true',\n  note: r.note || null,\n}));\n\nconst unmatched = {};\nfor (const r of all.filter(r => !r.recfluence_channel_id && r.lewis_channel_name)) {\n  (unmatched[r.person_id] ??= []).push(r.lewis_channel_name);\n}\nconst missing = Object.entries(unmatched).map(([personId, names]) => ({ personId, names }));\n\n// One request for both parts: two parallel requests touching the same Person nodes can deadlock.\nconst statement = `\nUNWIND $runs AS r\nMATCH (p:Person {id: r.personId})\nMATCH (c:Channel {channelId: r.channelId})\nMERGE (p)-[x:RUNS]->(c)\nSET x.lewisChannelName = r.lewisName, x.listedByLewis = r.listedByLewis,\n    x.note = r.note, x.source = 'Lewis 2018, Appendix B'\nWITH count(x) AS runsWritten\nCALL () {\n  UNWIND $missing AS m\n  MATCH (p:Person {id: m.personId})\n  SET p.channelsNotInRecfluence = m.names\n  RETURN count(p) AS peopleWithMissingChannels\n}\nRETURN runsWritten, peopleWithMissingChannels`;\n\nreturn [{ json: { step: 'RUNS', count: runs.length, body: { statement, parameters: { runs, missing } } } }];\n"
+      },
+      "id": "6f0d3e7e-2bcb-4767-82b2-ac3dc9fcbd97",
+      "name": "RUNS batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "161377e8-7db4-4006-b897-d3a3ce37c8f1",
+      "name": "Neo4j: write RUNS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/lewis_edges.csv",
+        "options": {}
+      },
+      "id": "3aaefbd1-3021-4c02-b050-af66de516214",
+      "name": "Read edges CSV",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        680,
+        800
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "csv",
+        "options": {}
+      },
+      "id": "5d56c38a-a0ed-449e-b8d4-eb362060dd36",
+      "name": "Edges CSV to rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        900,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 4 – Person -[:APPEARED_WITH]- Person. Mode: Run Once for All Items.\n// Input: rows from lewis_edges.csv (Extract from File → CSV).\nconst BATCH_SIZE = 5000;   // one request: parallel batches deadlocked on shared nodes (see notes)\nconst num = v => (v === '' || v == null ? null : Number(v));\n\nconst rows = $input.all().map(({ json: r }) => ({\n  a: r.a,\n  b: r.b,\n  confidence: r.confidence,            // high | medium | check\n  fromFigure: r.from_figure === 'true',\n  pixelCoverage: num(r.pixel_coverage),\n  pixelRidge: num(r.pixel_ridge),\n  note: r.note || null,\n  evidence: r.evidence ? r.evidence.split(' | ') : [],\n}));\n\nconst statement = `\nUNWIND $rows AS r\nMATCH (a:Person {id: r.a})\nMATCH (b:Person {id: r.b})\nMERGE (a)-[e:APPEARED_WITH]-(b)\nSET e.confidence = r.confidence, e.fromFigure = r.fromFigure,\n    e.pixelCoverage = r.pixelCoverage, e.pixelRidge = r.pixelRidge,\n    e.note = r.note, e.evidence = r.evidence,\n    e.source = 'Lewis 2018, Fig. 1', e.periodStart = date('2017-01-01'), e.periodEnd = date('2018-04-01')\nRETURN count(e) AS written`;\n\nconst out = [];\nfor (let i = 0; i < rows.length; i += BATCH_SIZE) {\n  const batch = rows.slice(i, i + BATCH_SIZE);\n  out.push({ json: { step: 'APPEARED_WITH', batch: out.length + 1, count: batch.length, body: { statement, parameters: { rows: batch } } } });\n}\nreturn out;\n"
+      },
+      "id": "05649d24-3686-4cfd-87de-8a4d9cb57829",
+      "name": "Edges batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "4136bca8-352a-4fed-95df-2a93c5e4468c",
+      "name": "Neo4j: write APPEARED_WITH",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "## Full graph import (W1 + W2)\nOne click rebuilds the whole graph, in the only order that works:\n\n**Row 1 – W1 Reset + schema:** wipe, constraints, 18 tags in 5 tag groups, vector index. The statements run one by one through *Loop Over Items*.\n**Row 2 – Recfluence channels:** 659 channels, `TAGGED_AS` to existing tags.\n**Row 3 – Lewis network:** 65 people, 57 `RUNS`, 471 `APPEARED_WITH`.\n\nEach read node after a Neo4j write has *Execute Once* on, so each step starts exactly once.\nEvery Neo4j write is a single request: parallel batches deadlocked earlier (creating a relationship locks both end nodes).\n\n**Expected:** Channel 659, Tag 18, TagGroup 5, Person 65 · TAGGED_AS 1004, IN_GROUP 18, RUNS 57, APPEARED_WITH 471",
+        "height": 560,
+        "width": 500,
+        "color": 5
+      },
+      "id": "f2122789-a95f-4b00-84dd-aabd9bf9f549",
+      "name": "About full import",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- *Neo4j* nodes: Basic Auth credential (`neo4j` + your password).\n- URL uses Neo4j's **Query API** (`/db/neo4j/query/v2`). Every write is followed by a *Check* node that fails the run if Neo4j reports an error, so nothing fails silently.\n- Each step sends **one** request with all rows. Parallel batches deadlocked (creating a relationship locks both end nodes), so we stopped splitting.\n- *Retry on fail* (3 tries) handles temporary Neo4j errors.",
+        "height": 200,
+        "width": 500,
+        "color": 3
+      },
+      "id": "948c8b06-4d35-4fbe-b7a4-8c89969266d4",
+      "name": "Setup full import",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "26d2cb44-be48-4cf4-9817-f78cccb3a81e",
+      "name": "Check run statement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        790,
+        270
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "43091ce2-e4a2-48a6-bee8-2a0998ec428f",
+      "name": "Check write channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1690,
+        570
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "cc74bed7-4fc5-44b1-87a9-ec648716a63b",
+      "name": "Check write people",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -310,
+        970
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "1944ffcb-0213-4634-b312-2a43718f63f2",
+      "name": "Check write RUNS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        570,
+        970
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fail loudly if Neo4j reports an error. Covers both cases: an HTTP error status\n// (the node fails by itself) and a 2xx response with an \"errors\" list in the body.\nfor (const item of $input.all()) {\n  const errors = item.json.errors ?? [];\n  if (errors.length) {\n    throw new Error(`Neo4j error: ${errors[0].code} – ${errors[0].message}`);\n  }\n}\nreturn $input.all();"
+      },
+      "id": "516909fa-d8c3-4127-987b-16a2fdebbf73",
+      "name": "Check write APPEARED_WITH",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1450,
+        970
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Schema statements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schema statements": {
+      "main": [
+        [
+          {
+            "node": "One statement at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One statement at a time": {
+      "main": [
+        [
+          {
+            "node": "Read Recfluence file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Neo4j: run statement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: run statement": {
+      "main": [
+        [
+          {
+            "node": "Check run statement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Recfluence file": {
+      "main": [
+        [
+          {
+            "node": "File to text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to text": {
+      "main": [
+        [
+          {
+            "node": "Filter, clean, batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter, clean, batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write channels": {
+      "main": [
+        [
+          {
+            "node": "Check write channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read people CSV": {
+      "main": [
+        [
+          {
+            "node": "People CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "People CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "People batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "People batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write people",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write people": {
+      "main": [
+        [
+          {
+            "node": "Check write people",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read channels CSV": {
+      "main": [
+        [
+          {
+            "node": "Channels CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Channels CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "RUNS batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RUNS batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write RUNS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Neo4j: write RUNS": {
+      "main": [
+        [
+          {
+            "node": "Check write RUNS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read edges CSV": {
+      "main": [
+        [
+          {
+            "node": "Edges CSV to rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edges CSV to rows": {
+      "main": [
+        [
+          {
+            "node": "Edges batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edges batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write APPEARED_WITH",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check run statement": {
+      "main": [
+        [
+          {
+            "node": "One statement at a time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write channels": {
+      "main": [
+        [
+          {
+            "node": "Read people CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write people": {
+      "main": [
+        [
+          {
+            "node": "Read channels CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write RUNS": {
+      "main": [
+        [
+          {
+            "node": "Read edges CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check write APPEARED_WITH": {
+      "main": [
+        []
+      ]
+    },
+    "Neo4j: write APPEARED_WITH": {
+      "main": [
+        [
+          {
+            "node": "Check write APPEARED_WITH",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

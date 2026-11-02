@@ -1,0 +1,162 @@
+{
+  "name": "W2 – Step 1: Recfluence channels",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## W2 – Step 1: Recfluence channels → Neo4j\n**Source:** Recfluence classified channels (Ledwich & Zaitsev), JSONL export.\n\n1. Reads `/files/recfluence.jsonl` and turns it into text.\n2. **Code node** keeps human-reviewed channels with 100k+ subscribers, plus the 55 channels in the Lewis (2018) network. Repairs broken UTF-8 (`GariÃ©py` → `Gariépy`), maps `lr` to left/centre/right, and marks each label `human` or `auto`.\n3. Sends all rows in **one** `UNWIND … MERGE` query. Batches sent in parallel deadlocked on shared `Tag` nodes and lost 200 channels, so we stopped splitting.\n4. Links each channel to its tags with `MATCH`. The tags already exist from W1.\n\n**Graph:** `(:Channel)-[:TAGGED_AS {source}]->(:Tag)`\n**Expected:** 659 channels. Re-running gives no duplicates.",
+        "height": 480,
+        "width": 420,
+        "color": 5
+      },
+      "id": "e0102878-f7a9-4c81-a110-af29239646da",
+      "name": "About step 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -500,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "ed5fff9a-0e4f-4bfe-955f-5ad6585fac66",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/files/recfluence.jsonl",
+        "options": {}
+      },
+      "id": "1863aa4c-8623-4cf3-9a57-1bf510f7d264",
+      "name": "Read Recfluence file",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "options": {}
+      },
+      "id": "a6cf2763-f96b-4caa-a8fc-d130932d58b1",
+      "name": "File to text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// W2 step 1 – Recfluence channels: parse, filter, clean, batch\n// Mode: Run Once for All Items.\n// Input: output of an 'Extract from File' node (operation: Extract From Text File), i.e. the file text in $json.data.\n// Written without Buffer/this.helpers so it runs in n8n's sandboxed task runner.\n\nconst MIN_SUBS = 100000;\nconst BATCH_SIZE = 5000;   // one request: parallel batches deadlocked on shared nodes (see notes)\n\n// Channels from the Lewis network, always imported even below the filter\nconst LEWIS_IDS = new Set([\n  'UC-yewGHQbNFpDrGM0diZOLA','UC0aVoboXBUx2-tVIWHc3W2Q','UC0rZoXAD5lxgBHMsjrGwWWQ','UC2h3yPmh9TfQv2z3aTDTHHA',\n  'UC554eY5jNUfDq3yDOJYirOQ','UC5tEELgWBfKbA9fVPRzBzPQ','UC6cMYsKMx6XicFcFm7mTsmA','UC6wdP5hTf_phre6Q3kFiV2g',\n  'UC87YBeLMwXhgaw5tcCxsXgQ','UCAgBUlIpzlJaE0693J3s97w','UCAldq8BAAGdsX9UyK_09-ZA','UCC3L8QaxqEGUiBC252GHy3w',\n  'UCDVb4m_5QHhZElT47E1oODg','UCDmCBKaKOtOrEqgsL4-3C8Q','UCEE8w-v6Gg4j3ze3oX-urEw','UCFpvg5yg5fMda91yiI1owSQ',\n  'UCG749Dj4V2fKa143f8sE60Q','UCHlZ46QmqDdXFMbsaF8evIg','UCIveFvW-ARp_B_RckhweNJw','UCJdKr0Bgd_5saZYqLCa9mng',\n  'UCKEt1xKVBLuL175dkk8rqLg','UCL0u5uz7KZ9q-pe-VC8TY-w','UCL9PlYkRD3Q-RZca6CCnPKw','UCLJkNhB1Eg_mXx0quUju0Og',\n  'UCL_f53ZEJxp8TtlOkHwMV9Q','UCLfhh63n0fWn0gXXKQ5NWvw','UCMLbmp5tcLxzahMLTmeM4lg','UCN0-RRaxMgh86eOwndAklxw',\n  'UCNAxrHudMfdzNi6NxruKPLw','UCOtFVJUoek4TKZAaeQVhiLA','UCPGxwlhPEJE89bT4gB6rzhg','UCSTy-H5lSiCcozas32sfJlQ',\n  'UCT9D87j5W7PtE7NHOR5DUOQ','UCZWlSUNDvCCS1hBiXV0zKcA','UCZeP6H2mELnRI9imY5Iga0g','UCaeO5vkdj5xOQHp4UmIN6dw',\n  'UCctjGdm2NlMNzIlxz02IsXA','UCdf14z6V0MWNeVcbAz0r8wQ','UCe02lGcO-ahAURWuxAJnjdA','UCesrUK_dMDBZAf7cnjQPdgQ',\n  'UCfYbb7nga6-icsFWWgS-kWw','UCittVh8imKanO_5KohzDbpg','UCka_dz0F1gYuvN8LTefNcJQ','UCl3RCEtooHD5bhPCHJw3btA',\n  'UClMWnUHbxJKJLUgloN1mPUA','UCla6APLHX6W3FeNLc8PYuvg','UCmrLCXSDScliR7q8AxxjvXg','UCnQC_G5Xsjhp9fEJKuIcrSw',\n  'UCowcNKm1w2GGw5U_XQeduhg','UCpbyOgUSjTSPpvVUAT2OyHw','UCpiCH7qvGVlzMOqy3dncA5Q','UCr4kgAUTFkGIwlWSodg43QA',\n  'UCr_Q-bPpcw5fJ-Oow1BW1NQ','UCyhEZKz-LOwgktptEOh6_Iw','UCzQUP1qoWDoEbmsQxvdjxgQ',\n]);\n\n// Repair text that was UTF-8 but got decoded as Windows-1252 (\"GariÃ©py\" -> \"Gariépy\")\nconst CP1252 = {0x20AC:0x80,0x201A:0x82,0x0192:0x83,0x201E:0x84,0x2026:0x85,0x2020:0x86,0x2021:0x87,0x02C6:0x88,\n  0x2030:0x89,0x0160:0x8A,0x2039:0x8B,0x0152:0x8C,0x017D:0x8E,0x2018:0x91,0x2019:0x92,0x201C:0x93,0x201D:0x94,\n  0x2022:0x95,0x2013:0x96,0x2014:0x97,0x02DC:0x98,0x2122:0x99,0x0161:0x9A,0x203A:0x9B,0x0153:0x9C,0x017E:0x9E,0x0178:0x9F};\nfunction utf8Decode(bytes) {\n  // returns null if the bytes are not valid UTF-8\n  let out = '', i = 0;\n  while (i < bytes.length) {\n    const b = bytes[i];\n    let cp, n;\n    if (b < 0x80) { cp = b; n = 0; }\n    else if (b >= 0xC2 && b < 0xE0) { cp = b & 0x1F; n = 1; }\n    else if (b >= 0xE0 && b < 0xF0) { cp = b & 0x0F; n = 2; }\n    else if (b >= 0xF0 && b < 0xF5) { cp = b & 0x07; n = 3; }\n    else return null;\n    if (i + n >= bytes.length + (n ? 0 : 1)) return null;\n    for (let k = 1; k <= n; k++) {\n      const c = bytes[i + k];\n      if (c === undefined || (c & 0xC0) !== 0x80) return null;\n      cp = (cp << 6) | (c & 0x3F);\n    }\n    out += String.fromCodePoint(cp);\n    i += n + 1;\n  }\n  return out;\n}\nfunction decodeRun(run) {\n  const bytes = [];\n  for (const ch of run) {\n    const c = ch.codePointAt(0);\n    bytes.push(c < 0x100 ? c : CP1252[c]);\n  }\n  const out = utf8Decode(bytes);\n  return out === null ? run : out;   // only accept a clean repair\n}\nfunction fixText(s) {\n  if (!s || !/[ÃÂâ]/.test(s)) return s;\n  s = s.replace(/Â(?=\\s)/g, '');        // \"Â \" is a mangled non-breaking space\n  // repair each run of suspicious characters separately, so one bad spot can't block the rest\n  const cp = Object.keys(CP1252).map(k => String.fromCodePoint(+k)).join('');\n  return s.replace(new RegExp(`[\\u0080-\\u00FF${cp}]+`, 'gu'), decodeRun);\n}\n\nconst LEAN = { L: 'left', C: 'centre', R: 'right' };\n\nconst text = $input.first().json.data;\nif (typeof text !== 'string') {\n  throw new Error('Expected the file text in $json.data – put an \"Extract from File\" node (Extract From Text File) before this node.');\n}\nconst lines = text.split('\\n').filter(l => l.trim());\n\nconst rows = [];\nfor (const line of lines) {\n  const r = JSON.parse(line);\n  const keep = (r.reviewsHuman >= 1 && r.subs >= MIN_SUBS) || LEWIS_IDS.has(r.channelId);\n  if (!keep) continue;\n  rows.push({\n    channelId: r.channelId,\n    title: fixText(r.channelTitle),\n    subs: r.subs,\n    views: r.channelViews,\n    lean: LEAN[r.lr] ?? null,\n    humanReviews: r.reviewsHuman,\n    labelSource: r.reviewsHuman >= 1 ? 'human' : 'auto',\n    tags: r.tags ?? [],\n    description: fixText(r.description) || null,\n    reviewerNote: r.publicReviewerNotes,\n    creatorNote: r.publicCreatorNotes,\n    inLewis: LEWIS_IDS.has(r.channelId),\n  });\n}\n\nconst CYPHER = `\nUNWIND $rows AS r\nMERGE (c:Channel {channelId: r.channelId})\nSET c.title = r.title, c.subs = r.subs, c.views = r.views,\n    c.lean = r.lean, c.humanReviews = r.humanReviews,\n    c.labelSource = r.labelSource, c.description = r.description,\n    c.reviewerNote = r.reviewerNote, c.creatorNote = r.creatorNote,\n    c.inLewis = r.inLewis, c.source = 'Recfluence'\nWITH c, r\nUNWIND r.tags AS t\nMATCH (tag:Tag {name: t})            // tags are created by W1, so batches never fight over them\nMERGE (c)-[:TAGGED_AS {source: 'Recfluence'}]->(tag)`;\n\n// One output item per batch; the HTTP Request node sends $json.body to Neo4j's Query API\nconst out = [];\nfor (let i = 0; i < rows.length; i += BATCH_SIZE) {\n  const batch = rows.slice(i, i + BATCH_SIZE);\n  out.push({ json: {\n    batch: out.length + 1,\n    count: batch.length,\n    body: { statement: CYPHER, parameters: { rows: batch } },\n  } });\n}\nreturn out;\n"
+      },
+      "id": "9fefbd71-cf8e-40ad-bf79-0c0e7eea1fcd",
+      "name": "Filter, clean, batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:7474/db/neo4j/query/v2",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "id": "e32b054c-5bab-49bd-821a-5f51b870109a",
+      "name": "Neo4j: write channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "content": "**Setup**\n- *Neo4j* nodes: Basic Auth credential (`neo4j` + your password).\n- URL uses Neo4j's **Query API** (`/db/neo4j/query/v2`). Cypher errors come back as HTTP errors, so the node turns red by itself.\n- Each step sends **one** request with all rows. Parallel batches deadlocked (creating a relationship locks both end nodes), so we stopped splitting.\n- *Retry on fail* (3 tries) handles temporary Neo4j errors.",
+        "height": 200,
+        "width": 380,
+        "color": 3
+      },
+      "id": "884893e4-22d3-4e7e-8b75-b6b947715777",
+      "name": "Setup step 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        400,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Recfluence file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Recfluence file": {
+      "main": [
+        [
+          {
+            "node": "File to text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to text": {
+      "main": [
+        [
+          {
+            "node": "Filter, clean, batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter, clean, batch": {
+      "main": [
+        [
+          {
+            "node": "Neo4j: write channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
