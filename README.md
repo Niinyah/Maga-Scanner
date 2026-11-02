@@ -264,3 +264,5 @@ Later sessions only need Neo4j, the n8n container and Ollama running. The data p
 ```
 
 `recfluence.jsonl` and the PDFs are downloaded separately (see Setup).
+
+🫃
